@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root))
 import pandas as pd
 
 from src.config import ENABLE_EXPENSIVE_FAILED_REPACK, OUTPUT_DIR, PALLET_INDEX_TARGETS
-from src.data import load_boxes
+from src.data import load_boxes, load_boxes_from_api
 from src.geometry import validate_center_of_mass
 from src.main import PackingWorkflow, build_json_output_plan
 from src.main.report_persister import JsonFileReportPersister
@@ -70,7 +70,7 @@ class _DynamicRescueOptimizer:
 def build_workflow() -> PackingWorkflow:
     """组装 PackingWorkflow。所有原语来自 src/。"""
     return PackingWorkflow(
-        preprocess_fn=load_boxes,
+        preprocess_fn=load_boxes_from_api,
         custom_packer_cls=BeamSearchPacker,
         build_direct_layer_solution=build_direct_layer_packing_solution,
         build_centered_single_box_solution=build_centered_single_box_solution,

@@ -50,7 +50,7 @@ def _make_reachability_checker(pallet_dims: Dict[str, float]) -> SuctionPlanner:
         allow_suction_rotation_90=True,
     )
 
-
+#TODO 整层确定性装箱
 def build_direct_layer_packing_solution(
     items: List[Dict],
     target_mpm: float,
