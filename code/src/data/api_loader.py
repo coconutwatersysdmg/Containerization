@@ -16,6 +16,10 @@ from typing import Dict, List, Optional
 
 import requests
 import urllib3
+import pandas as pd
+import numpy as np
+from .excel_loader import _detect_small_box_threshold
+from src.config.constants import SMALL_BOX_SOURCE_FILE, SMALL_BOX_BMS_SHEET
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Mock Server 地址，可通过环境变量覆盖
@@ -23,6 +27,14 @@ DEFAULT_BASE_URL = os.getenv(
     "WCS_MOCK_URL",
     "https://3c3758c8-755a-499e-b580-76afda706e5e.mock.pstmn.io",
 )
+
+# Load BMS sheet once to get min_pack_multiple per box_type (used by API loader)
+try:
+    _BMS_DF = pd.read_excel(SMALL_BOX_SOURCE_FILE, sheet_name=SMALL_BOX_BMS_SHEET)
+    _BMS_DF = _BMS_DF.set_index('包装规格代码')
+except Exception as e:
+    print(f"警告：读取 BMS 表失败，min_pack_multiple 将使用默认值 0. 错误: {e}")
+    _BMS_DF = pd.DataFrame()
 
 
 def _make_msg_header() -> Dict[str, str]:
@@ -98,10 +110,11 @@ def _expand_stock_to_boxes(
 
         dims = pallet_dims_map.get(case_type, {})
 
-        # TODO: min_pack_multiple 目前接口未返回，暂设为 1。
-        #       如果业务上每种 box_type 有不同的指数贡献值，
-        #       需要从 BMS 数据或其它接口获取后在此处替换。
-        min_pack_multiple = 1
+        # 从 BMS 表获取每种箱型对应的最小包装倍数，若未找到则默认 0
+        if not _BMS_DF.empty and box_type in _BMS_DF.index:
+            min_pack_multiple = float(_BMS_DF.loc[box_type, '最小包装量的倍数'])
+        else:
+            min_pack_multiple = 0.0
 
         for i in range(target_num):
             box_id = f"{order_id}_{box_type}-{i + 1}"
@@ -166,6 +179,47 @@ def load_boxes_from_api(
         all_boxes = _expand_stock_to_boxes(stock_entries, pallet_dims_map)
         total = len(all_boxes)
         print(f"  共展开为 {total} 个箱子记录。")
+
+        # ---------- 开始小箱子判定逻辑（与 excel_loader 相同） ----------
+        df_boxes = pd.DataFrame(all_boxes)
+        # 体积 (mm^3) 与体积 (m^3)
+        df_boxes['体积(mm^3)'] = df_boxes['length'] * df_boxes['width'] * df_boxes['height']
+        df_boxes['体积(m^3)'] = df_boxes['体积(mm^3)'] / 1_000_000_000.0
+        # 密度与密度/体积指数
+        df_boxes['密度(kg/m^3)'] = df_boxes['weight'] / df_boxes['体积(m^3)']
+        df_boxes['密度/体积指数'] = df_boxes['密度(kg/m^3)'] / df_boxes['体积(m^3)']
+
+        # 检测阈值
+        threshold_volume = _detect_small_box_threshold(
+            df_boxes[['包装规格代码', '体积(mm^3)', '密度/体积指数']]
+        )
+        if threshold_volume is None:
+            threshold_volume = float('inf')
+            df_boxes['is_small_box'] = False
+        else:
+            df_boxes['is_small_box'] = df_boxes['体积(mm^3)'] < threshold_volume - 1e-9
+
+        # 统计并打印
+        small_box_count = int(df_boxes['is_small_box'].sum())
+        non_small_box_count = int((~df_boxes['is_small_box']).sum())
+        threshold_text = (
+            '未能检测到有效阈值' if not np.isfinite(threshold_volume)
+            else f'{threshold_volume:.2f} mm^3'
+        )
+        print(f"检测到小箱子体积阈值: {threshold_text}")
+        print(f"小箱子数量: {small_box_count}，非小箱子数量: {non_small_box_count}")
+
+        # 去除中间计算列，保留业务字段
+        all_boxes = df_boxes.drop(
+            columns=['体积(mm^3)', '体积(m^3)', '密度(kg/m^3)', '密度/体积指数'],
+            errors='ignore',
+        ).to_dict('records')
+        # 确保每个箱子都有必备字段（防止意外缺失）
+        for box in all_boxes:
+            box.setdefault('is_small_box', False)
+            box.setdefault('volume', box['length'] * box['width'] * box['height'])
+            box.setdefault('weight', float(box.get('weight', 0) or 0))
+        # ---------- 结束小箱子判定逻辑 ----------
 
         if not all_boxes:
             print("警告：接口返回的库存数据为空。")
