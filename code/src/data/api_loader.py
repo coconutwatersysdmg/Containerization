@@ -15,7 +15,8 @@ import uuid
 from typing import Dict, List, Optional
 
 import requests
-
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Mock Server 地址，可通过环境变量覆盖
 DEFAULT_BASE_URL = os.getenv(
@@ -39,7 +40,7 @@ def _fetch_stock(base_url: str) -> List[Dict]:
     返回原始的库存条目列表（每条代表一种箱子，含 target_num 表示数量）。
     """
     url = f"{base_url.rstrip('/')}/adaptor/api/wcs/reqstockinfo"
-    resp = requests.post(url, json=_make_msg_header(), timeout=30)
+    resp = requests.post(url, json=_make_msg_header(), timeout=30, verify=False)
     resp.raise_for_status()
     body = resp.json()
     if body.get("code") != 0:
@@ -63,7 +64,7 @@ def _fetch_pallet_dims(base_url: str, case_type: str) -> Dict[str, float]:
         "pallet_code": "",
         "case_type": case_type,
     }
-    resp = requests.post(url, json=payload, timeout=30)
+    resp = requests.post(url, json=payload, timeout=30, verify=False)
     resp.raise_for_status()
     body = resp.json()
     dims = (body.get("data") or {}).get("pallet_dims", {})
@@ -103,7 +104,7 @@ def _expand_stock_to_boxes(
         min_pack_multiple = 1
 
         for i in range(target_num):
-            box_id = f"{box_type}-{i + 1}"
+            box_id = f"{order_id}_{box_type}-{i + 1}"
             boxes.append({
                 "id": box_id,
                 "original_box_id": box_id,
