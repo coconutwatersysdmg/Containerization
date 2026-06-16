@@ -5,6 +5,15 @@
 """
 
 from .excel_loader import load_boxes
-from .api_loader import load_boxes_from_api
+from .api_loader import (
+    load_boxes_from_api,
+    fetch_and_save_stock_json,
+    load_boxes_from_local_json,
+)
 
-__all__ = ["load_boxes", "load_boxes_from_api"]
+__all__ = [
+    "load_boxes",
+    "load_boxes_from_api",
+    "fetch_and_save_stock_json",
+    "load_boxes_from_local_json",
+]

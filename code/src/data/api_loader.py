@@ -9,9 +9,12 @@ HTTP API 数据加载器
     两者返回的 List[Dict] 结构完全一致，装箱核心逻辑无需任何改动。
 """
 
+import json
 import os
 import time
 import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import requests
@@ -249,3 +252,126 @@ def load_boxes_from_api(
     except Exception as exc:
         print(f"错误：加载 API 数据时发生异常: {exc}")
         return None
+
+
+# ============================================================================
+# 定时下载 + 本地文件加载（生产者/消费者模式专用）
+# ============================================================================
+
+def fetch_and_save_stock_json(
+    input_dir: Path,
+    base_url: Optional[str] = None,
+) -> Optional[Path]:
+    """
+    向 WCS 接口发送一次请求，把返回的原始 JSON 保存到 input_dir。
+
+    文件名格式：YYYYMMDD_HHMMSS.json（按时间自然排序）。
+
+    Returns:
+        保存成功时返回文件路径；失败时返回 None。
+    """
+    if base_url is None:
+        base_url = DEFAULT_BASE_URL
+
+    try:
+        url = f"{base_url.rstrip('/')}/adaptor/api/wcs/reqstockinfo"
+        resp = requests.post(url, json=_make_msg_header(), timeout=30, verify=False)
+        resp.raise_for_status()
+
+        # 确保目录存在
+        input_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = input_dir / f"{ts}.json"
+        filepath.write_text(resp.text, encoding="utf-8")
+        print(f"[下载] {ts} → 已保存 {filepath.name}")
+        return filepath
+
+    except Exception as exc:
+        print(f"[下载] 错误: {exc}")
+        return None
+
+
+def load_boxes_from_local_json(
+    filepath: str,
+) -> Optional[List[Dict]]:
+    """
+    从本地已保存的库存 JSON 文件中加载箱子数据。
+
+    该函数的处理逻辑（展开、托盘尺寸、小箱子判定）与 load_boxes_from_api
+    完全一致，唯一区别是数据来源从 HTTP 接口变为本地 JSON 文件。
+
+    Args:
+        filepath: 本地 JSON 文件路径。
+
+    Returns:
+        箱子字典列表；文件异常时返回 None。
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            body = json.load(f)
+
+        if body.get("code") != 0:
+            print(f"[加载] JSON 内容错误: code={body.get('code')}, msg={body.get('msg')}")
+            return None
+
+        stock_entries = body.get("data", [])
+        print(f"  从文件 {Path(filepath).name} 读取到 {len(stock_entries)} 种箱型。")
+
+        # 托盘尺寸从 Excel 映射获取
+        case_types = {
+            entry.get("case_type", "MH423C") for entry in stock_entries
+        }
+        pallet_dims_map: Dict[str, Dict[str, float]] = {}
+        for ct in case_types:
+            pallet_dims_map[ct] = _get_pallet_dims_from_excel(ct)
+
+        # 展开为独立箱子记录
+        all_boxes = _expand_stock_to_boxes(stock_entries, pallet_dims_map)
+        total = len(all_boxes)
+        print(f"  共展开为 {total} 个箱子记录。")
+
+        # ---------- 小箱子判定逻辑（与 load_boxes_from_api 完全相同） ----------
+        df_boxes = pd.DataFrame(all_boxes)
+        df_boxes['体积(mm^3)'] = df_boxes['length'] * df_boxes['width'] * df_boxes['height']
+        df_boxes['体积(m^3)'] = df_boxes['体积(mm^3)'] / 1_000_000_000.0
+        df_boxes['密度(kg/m^3)'] = df_boxes['weight'] / df_boxes['体积(m^3)']
+        df_boxes['密度/体积指数'] = df_boxes['密度(kg/m^3)'] / df_boxes['体积(m^3)']
+
+        threshold_volume = _detect_small_box_threshold(
+            df_boxes[['包装规格代码', '体积(mm^3)', '密度/体积指数']]
+        )
+        if threshold_volume is None:
+            threshold_volume = float('inf')
+            df_boxes['is_small_box'] = False
+        else:
+            df_boxes['is_small_box'] = df_boxes['体积(mm^3)'] < threshold_volume - 1e-9
+
+        small_box_count = int(df_boxes['is_small_box'].sum())
+        non_small_box_count = int((~df_boxes['is_small_box']).sum())
+        threshold_text = (
+            '未能检测到有效阈值' if not np.isfinite(threshold_volume)
+            else f'{threshold_volume:.2f} mm^3'
+        )
+        print(f"  小箱子阈值: {threshold_text}，小箱: {small_box_count}，非小箱: {non_small_box_count}")
+
+        all_boxes = df_boxes.drop(
+            columns=['体积(mm^3)', '体积(m^3)', '密度(kg/m^3)', '密度/体积指数'],
+            errors='ignore',
+        ).to_dict('records')
+        for box in all_boxes:
+            box.setdefault('is_small_box', False)
+            box.setdefault('volume', box['length'] * box['width'] * box['height'])
+            box.setdefault('weight', float(box.get('weight', 0) or 0))
+        # ---------- 结束小箱子判定逻辑 ----------
+
+        if not all_boxes:
+            print("  警告：文件中的库存数据为空。")
+            return None
+
+        return all_boxes
+
+    except Exception as exc:
+        print(f"[加载] 读取文件 {filepath} 时发生异常: {exc}")
+        return None
+
