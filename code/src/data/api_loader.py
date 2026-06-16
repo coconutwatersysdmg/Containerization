@@ -19,7 +19,9 @@ import urllib3
 import pandas as pd
 import numpy as np
 from .excel_loader import _detect_small_box_threshold
-from src.config.constants import SMALL_BOX_SOURCE_FILE, SMALL_BOX_BMS_SHEET
+from src.config.constants import (
+    SMALL_BOX_SOURCE_FILE, SMALL_BOX_BMS_SHEET, SMALL_BOX_SOURCE_SHEET,
+)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Mock Server 地址，可通过环境变量覆盖
@@ -28,13 +30,40 @@ DEFAULT_BASE_URL = os.getenv(
     "https://3c3758c8-755a-499e-b580-76afda706e5e.mock.pstmn.io",
 )
 
-# Load BMS sheet once to get min_pack_multiple per box_type (used by API loader)
+# ============================================================================
+# 从 Excel 一次性加载两张表：
+#   1. BMS 表 → box_type 对应的 min_pack_multiple
+#   2. 数据表 → case_type 对应的 pallet_dims（托盘尺寸）
+# ============================================================================
+_BMS_DF = pd.DataFrame()
+_PALLET_DIMS_MAP: Dict[str, Dict[str, float]] = {}
+
 try:
     _BMS_DF = pd.read_excel(SMALL_BOX_SOURCE_FILE, sheet_name=SMALL_BOX_BMS_SHEET)
     _BMS_DF = _BMS_DF.set_index('包装规格代码')
 except Exception as e:
     print(f"警告：读取 BMS 表失败，min_pack_multiple 将使用默认值 0. 错误: {e}")
-    _BMS_DF = pd.DataFrame()
+
+try:
+    _excel = pd.ExcelFile(SMALL_BOX_SOURCE_FILE)
+    _source_sheet = SMALL_BOX_SOURCE_SHEET
+    if _source_sheet not in _excel.sheet_names:
+        for _sn in _excel.sheet_names:
+            if _sn not in {SMALL_BOX_BMS_SHEET, "说明"}:
+                _source_sheet = _sn
+                break
+    _df_tasks = pd.read_excel(SMALL_BOX_SOURCE_FILE, sheet_name=_source_sheet)
+    # 按 Case类型 去重，取第一条的托盘长/宽/高
+    for _, _row in _df_tasks.drop_duplicates(subset=['Case类型']).iterrows():
+        _ct = str(_row['Case类型'])
+        _PALLET_DIMS_MAP[_ct] = {
+            "length": float(_row.get('托盘长', 0) or 0),
+            "width": float(_row.get('托盘宽', 0) or 0),
+            "height": float(_row.get('托盘高', 0) or 0),
+        }
+    print(f"从 Excel 加载托盘尺寸映射：{_PALLET_DIMS_MAP}")
+except Exception as e:
+    print(f"警告：读取 Excel 托盘尺寸失败: {e}")
 
 
 def _make_msg_header() -> Dict[str, str]:
@@ -62,29 +91,17 @@ def _fetch_stock(base_url: str) -> List[Dict]:
     return body.get("data", [])
 
 
-def _fetch_pallet_dims(base_url: str, case_type: str) -> Dict[str, float]:
+def _get_pallet_dims_from_excel(case_type: str) -> Dict[str, float]:
     """
-    调用接口6（/adaptor/api/wcs/palletarrive）获取托盘尺寸。
+    从 Excel 预加载的映射表中查找托盘尺寸。
 
     Returns:
         {"length": float, "width": float, "height": float}
     """
-    url = f"{base_url.rstrip('/')}/adaptor/api/wcs/palletarrive"
-    payload = {
-        "robot_id": "001",
-        "station_id": "001",
-        "pallet_code": "",
-        "case_type": case_type,
-    }
-    resp = requests.post(url, json=payload, timeout=30, verify=False)
-    resp.raise_for_status()
-    body = resp.json()
-    dims = (body.get("data") or {}).get("pallet_dims", {})
-    return {
-        "length": float(dims.get("length", 0) or 0),
-        "width": float(dims.get("width", 0) or 0),
-        "height": float(dims.get("height", 0) or 0),
-    }
+    dims = _PALLET_DIMS_MAP.get(case_type, {})
+    if not dims:
+        print(f"  警告：Excel 中未找到 case_type={case_type} 的托盘尺寸，使用空值。")
+    return dims
 
 
 def _expand_stock_to_boxes(
@@ -165,15 +182,14 @@ def load_boxes_from_api(
         stock_entries = _fetch_stock(base_url)
         print(f"  获取到 {len(stock_entries)} 种箱型。")
 
-        # 2. 按 case_type 获取托盘尺寸（去重，避免重复请求）
+        # 2. 从 Excel 查找托盘尺寸（按 case_type）
         case_types = {
             entry.get("case_type", "MH423C") for entry in stock_entries
         }
         pallet_dims_map: Dict[str, Dict[str, float]] = {}
         for ct in case_types:
-            print(f"  获取托盘尺寸: case_type={ct} ...")
-            pallet_dims_map[ct] = _fetch_pallet_dims(base_url, ct)
-            print(f"    → {pallet_dims_map[ct]}")
+            pallet_dims_map[ct] = _get_pallet_dims_from_excel(ct)
+            print(f"  托盘尺寸 (来自Excel): case_type={ct} → {pallet_dims_map[ct]}")
 
         # 3. 展开为独立箱子记录
         all_boxes = _expand_stock_to_boxes(stock_entries, pallet_dims_map)
