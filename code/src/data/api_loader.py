@@ -136,6 +136,9 @@ def _expand_stock_to_boxes(
         else:
             min_pack_multiple = 0.0
 
+        product_code = entry.get("product_code")
+        case_group = entry.get("case_group", 0)
+
         for i in range(target_num):
             box_id = f"{order_id}_{box_type}-{i + 1}"
             boxes.append({
@@ -153,6 +156,8 @@ def _expand_stock_to_boxes(
                 "is_small_box": False,
                 "volume": length * width * height,
                 "包装规格代码": str(box_type),
+                "product_code": product_code,
+                "case_group": case_group,
             })
 
     return boxes

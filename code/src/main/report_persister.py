@@ -7,17 +7,27 @@ summary for business review.
 
 import json
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 
 import pandas as pd
+
+from src.data.wcs_output import build_wcs_pallet_plan_payload, send_pallet_plan_result
 
 
 class JsonFileReportPersister:
     """Persist packing reports to local files."""
 
-    def __init__(self, output_dir: Path, timestamp_fn: Callable[[str], str]):
+    def __init__(
+        self,
+        output_dir: Path,
+        timestamp_fn: Callable[[str], str],
+        wcs_base_url: Optional[str] = None,
+        send_to_wcs: bool = True,
+    ):
         self._output_dir = output_dir
         self._timestamp_fn = timestamp_fn
+        self._wcs_base_url = wcs_base_url
+        self._send_to_wcs = send_to_wcs
 
     def persist(self, report: Dict, total_runtime: float) -> None:
         """Save JSON and pallet summary Excel files under output_dir."""
@@ -37,6 +47,10 @@ class JsonFileReportPersister:
         print("=" * 40)
         print(f"算法总运行时间：{total_runtime:.2f} 秒")
         print("=" * 40)
+
+        if self._send_to_wcs:
+            wcs_payload = build_wcs_pallet_plan_payload(report)
+            send_pallet_plan_result(wcs_payload, base_url=self._wcs_base_url)
 
     def _write_pallet_summary_excel(self, report: Dict, path: Path) -> None:
         rows = []
