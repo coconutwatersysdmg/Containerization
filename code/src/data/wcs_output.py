@@ -11,6 +11,7 @@ import requests
 import urllib3
 
 from .api_loader import DEFAULT_BASE_URL
+from src.utils.helpers import placement_sort_key
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -53,23 +54,12 @@ def _item_dims(item: Dict) -> Dict[str, float]:
     }
 
 
-def _placement_sort_key(item: Dict) -> tuple:
-    """按从下到上、从前到后、从左到右排序。"""
-    pos = item.get("position") or {}
-    return (
-        float(pos.get("z", 0) or 0),
-        float(pos.get("y", 0) or 0),
-        float(pos.get("x", 0) or 0),
-        str(item.get("id", "")),
-    )
-
-
 def _group_items_into_layers(items: List[Dict]) -> List[List[Dict]]:
     """按 z 坐标分层，同层内按放置顺序排序。"""
     if not items:
         return []
 
-    sorted_items = sorted(items, key=_placement_sort_key)
+    sorted_items = sorted(items, key=placement_sort_key)
     layers: List[List[Dict]] = []
     current_z: Optional[float] = None
     current_layer: List[Dict] = []

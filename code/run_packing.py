@@ -240,8 +240,6 @@ if __name__ == '__main__':
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\n\n[主线程] 收到 Ctrl+C，正在停止...")
         stop_event.set()
         downloader.join(timeout=10)
         processor.join(timeout=10)
-        print("[主线程] 服务已停止。")

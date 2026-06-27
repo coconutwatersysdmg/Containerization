@@ -13,6 +13,7 @@ from typing import Dict, List
 
 from src.geometry.center_of_mass import refresh_pallet_stability_status
 from src.geometry.support import calculate_direct_supported_area
+from src.utils.helpers import assign_placement_seq
 
 
 def _recalculate_suction_rect(item: Dict) -> None:
@@ -63,6 +64,7 @@ def build_json_output_plan(
     - 恢复每个箱子的原始 length/width/height/volume/weight
     - 重算 suction_rect 与 supported_area / support_ratio
     - 刷新 stability_checks
+    - 写入放置序号 seq
     """
     raw_by_id = {str(box.get('id')): box for box in raw_boxes}
     output_plan = deepcopy(packing_plan)
@@ -135,5 +137,7 @@ def build_json_output_plan(
                 if pallet_volume > 0 else 0.0
             )
             refresh_pallet_stability_status(pallet, pallet_dims)
+
+        assign_placement_seq(items)
 
     return output_plan

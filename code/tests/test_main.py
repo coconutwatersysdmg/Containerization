@@ -772,11 +772,53 @@ def test_output_fill_rate():
     assert pallet['box_total_volume'] == 3000000
     assert pallet['pallet_volume'] == 1000000000
     assert pallet['fill_rate'] == 0.003
+    items_by_id = {item['id']: item for item in pallet['packed_items']}
+    assert items_by_id[1]['seq'] == 1
+    assert items_by_id[2]['seq'] == 2
     print(
         f"填充率 OK: {pallet['box_total_volume']}/"
         f"{pallet['pallet_volume']}={pallet['fill_rate']}"
     )
     print("[PASS] 输出填充率\n")
+
+
+def test_output_placement_seq():
+    print("=" * 60)
+    print("测试输出放置序号 seq")
+    print("=" * 60)
+
+    pallet_dims = {'length': 1000, 'width': 1000, 'height': 1000}
+    raw_boxes = [
+        {'id': 'top', 'length': 100, 'width': 100, 'height': 100},
+        {'id': 'bottom', 'length': 100, 'width': 100, 'height': 100},
+    ]
+    plan = [{
+        'pallet_id': 'P1',
+        'packed_items': [
+            {
+                'id': 'top',
+                'length': 100,
+                'width': 100,
+                'height': 100,
+                'position': {'x': 0, 'y': 0, 'z': 100},
+                'pallet_dims': pallet_dims,
+            },
+            {
+                'id': 'bottom',
+                'length': 100,
+                'width': 100,
+                'height': 100,
+                'position': {'x': 0, 'y': 0, 'z': 0},
+                'pallet_dims': pallet_dims,
+            },
+        ],
+    }]
+
+    output = build_json_output_plan(plan, raw_boxes)
+    items_by_id = {item['id']: item for item in output[0]['packed_items']}
+    assert items_by_id['bottom']['seq'] == 1
+    assert items_by_id['top']['seq'] == 2
+    print("[PASS] 输出放置序号 seq\n")
 
 
 def test_workflow_smoke():
@@ -855,6 +897,7 @@ if __name__ == '__main__':
         test_result_formatter()
         test_output_quality_gate()
         test_output_fill_rate()
+        test_output_placement_seq()
         test_pallet_packer()
         test_pallet_packer_conservation_fallback()
         test_main_score_prefers_fuller_target_met_pallet()

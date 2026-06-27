@@ -249,6 +249,23 @@ def passes_small_box_below_constraint(point, dims, item_volume_value, placed_box
     return True
 
 
+def placement_sort_key(item: Dict) -> tuple:
+    """按从下到上、从前到后、从左到右排序。"""
+    pos = item.get('position') or {}
+    return (
+        float(pos.get('z', 0) or 0),
+        float(pos.get('y', 0) or 0),
+        float(pos.get('x', 0) or 0),
+        str(item.get('id', '')),
+    )
+
+
+def assign_placement_seq(items: List[Dict]) -> None:
+    """为托盘内每个箱子写入放置序号 seq（从 1 开始）。"""
+    for seq, item in enumerate(sorted(items, key=placement_sort_key), start=1):
+        item['seq'] = seq
+
+
 def apply_suction_pose_fields(item_copy, suction_pose):
     """把 SuctionPlanner 返回的姿态字段写入 item 副本。"""
     item_copy['suction_box_corner'] = suction_pose['box_corner']
