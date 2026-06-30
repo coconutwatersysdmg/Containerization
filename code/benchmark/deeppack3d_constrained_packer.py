@@ -133,6 +133,7 @@ class DeepPack3DConstrainedPacker:
         size_tolerance: float = 2.0,
         z_tolerance: float = 0.0,
         stop_when_target_met: bool = True,
+        pack_all_boxes: bool = True,
     ):
         if method not in HEURISTIC_MAP:
             raise ValueError(f"不支持的方法: {method}")
@@ -143,6 +144,7 @@ class DeepPack3DConstrainedPacker:
         self.size_tolerance = size_tolerance
         self.z_tolerance = z_tolerance
         self.stop_when_target_met = stop_when_target_met
+        self.pack_all_boxes = pack_all_boxes
 
     def pack_group(
         self,
@@ -187,6 +189,14 @@ class DeepPack3DConstrainedPacker:
                 suction,
                 raw_dims,
             )
+            if not packed and self.pack_all_boxes:
+                packed, unfitted = self._force_single_box_pallet(
+                    unfitted,
+                    pallet_dims,
+                    validator,
+                    suction,
+                    raw_dims,
+                )
             if not packed:
                 break
 
@@ -232,8 +242,56 @@ class DeepPack3DConstrainedPacker:
             pallet_counter += 1
 
         runtime = {"packing": round(time.time() - start, 4), "retry": 0.0}
-        diag = {"method": self.method, "lookahead": self.lookahead}
+        diag = {
+            "method": self.method,
+            "lookahead": self.lookahead,
+            "pack_all_boxes": self.pack_all_boxes,
+            "items_unplaced": len(unfitted),
+        }
         return type_plan, runtime, diag
+
+    def _force_single_box_pallet(
+        self,
+        unfitted: List[Dict],
+        pallet_dims: Dict,
+        validator,
+        suction,
+        raw_dims_fn,
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """新开空盘，尝试为池中任意一箱找到合法放置（单箱封盘）。"""
+        from src.geometry.gap_checker import passes_box_gap_constraint
+
+        w_bin, h_bin, d_bin = _int_dims(pallet_dims)
+
+        for idx, item in enumerate(unfitted):
+            partitioner = self._SpacePartitioner((w_bin, h_bin, d_bin))
+            actions = self._build_valid_actions(
+                [item],
+                partitioner,
+                [],
+                validator,
+                suction,
+                raw_dims_fn,
+                passes_box_gap_constraint,
+            )
+            if not indices(actions):
+                continue
+
+            item_idx, _bin_idx, placement_idx = self._select_action(
+                actions, [], pallet_dims
+            )
+            placement = actions[item_idx][0][placement_idx]
+            placed_item = placement[0]
+            _, (x, y, z), (w, h, d), _ = placement
+            cuboid = self._Cuboid(int(x), int(y), int(z), int(w), int(h), int(d))
+            if not partitioner.add(cuboid):
+                continue
+
+            remaining = list(unfitted)
+            remaining.pop(idx)
+            return [placed_item], remaining
+
+        return [], unfitted
 
     def _pack_one_pallet(
         self,
@@ -250,6 +308,7 @@ class DeepPack3DConstrainedPacker:
         partitioner = self._SpacePartitioner((w_bin, h_bin, d_bin))
         placed: List[Dict] = []
         pool = list(unfitted)
+        rotate_attempts = 0
 
         while pool:
             current_mpm = sum(float(b.get("min_pack_multiple", 0) or 0) for b in placed)
@@ -277,8 +336,16 @@ class DeepPack3DConstrainedPacker:
                 passes_box_gap_constraint,
             )
             if not actions or not indices(actions):
+                if (
+                    self.pack_all_boxes
+                    and rotate_attempts < len(pool) - 1
+                ):
+                    pool = pool[1:] + pool[:1]
+                    rotate_attempts += 1
+                    continue
                 break
 
+            rotate_attempts = 0
             item_idx, _bin_idx, placement_idx = self._select_action(
                 actions, placed, pallet_dims
             )
