@@ -13,14 +13,18 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 CODE_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = CODE_ROOT.parent
 if str(CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(CODE_ROOT))
 
 from benchmark.deeppack3d_benchmark import (  # noqa: E402
     HEURISTIC_METHODS,
+    build_constrained_detail_rows,
+    export_constrained_benchmark_excel,
     format_constrained_comparison_table,
     load_excel_boxes,
     run_current_project_packer,
@@ -43,6 +47,13 @@ def main() -> None:
         choices=list(HEURISTIC_METHODS),
     )
     parser.add_argument("--skip-current", action="store_true")
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="导出 Excel 路径，默认 output/constrained_benchmark_时间戳.xlsx",
+    )
     args = parser.parse_args()
 
     groups = load_excel_boxes(
@@ -50,6 +61,8 @@ def main() -> None:
         limit_groups=args.groups,
         max_boxes_per_group=args.max_boxes,
     )
+
+    all_detail_rows = []
 
     for pallet_type, sales_order_no, boxes in groups:
         target_mpm = PALLET_INDEX_TARGETS.get(pallet_type)
@@ -84,6 +97,20 @@ def main() -> None:
             )
 
         print(format_constrained_comparison_table(constrained, current), flush=True)
+        all_detail_rows.extend(
+            build_constrained_detail_rows(
+                pallet_type, sales_order_no, target_mpm, constrained, current
+            )
+        )
+
+    if all_detail_rows:
+        if args.output is None:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = PROJECT_ROOT / "output" / f"constrained_benchmark_{stamp}.xlsx"
+        else:
+            output_path = args.output
+        export_constrained_benchmark_excel(all_detail_rows, output_path)
+        print(f"\nExcel 已保存: {output_path.resolve()}", flush=True)
 
 
 if __name__ == "__main__":

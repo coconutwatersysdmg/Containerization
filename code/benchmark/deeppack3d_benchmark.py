@@ -489,6 +489,141 @@ def format_constrained_comparison_table(
     return "\n".join(lines)
 
 
+def _constrained_row(
+    *,
+    pallet_type: str,
+    sales_order_no: str,
+    target_mpm: Optional[float],
+    method: str,
+    box_count: int,
+    items_placed: int,
+    items_unplaced: int,
+    pallet_count: int,
+    success_pallets: int,
+    failed_pallets: int,
+    avg_fill_rate: float,
+    runtime_seconds: float,
+    avg_mpm_total: Optional[float] = None,
+) -> Dict:
+    placement_rate = items_placed / box_count if box_count else 0.0
+    return {
+        "托盘类型": pallet_type,
+        "销售订单号": sales_order_no,
+        "目标指数": target_mpm,
+        "方法": method,
+        "箱数": box_count,
+        "已装": items_placed,
+        "未装": items_unplaced,
+        "装完率": round(placement_rate, 6),
+        "托盘数": pallet_count,
+        "达标盘": success_pallets,
+        "未达标盘": failed_pallets,
+        "平均填充率": avg_fill_rate,
+        "平均指数": avg_mpm_total,
+        "耗时秒": runtime_seconds,
+    }
+
+
+def build_constrained_detail_rows(
+    pallet_type: str,
+    sales_order_no: str,
+    target_mpm: Optional[float],
+    constrained_results: List[ConstrainedResult],
+    current_result: Optional[CurrentProjectResult] = None,
+) -> List[Dict]:
+    rows = [
+        _constrained_row(
+            pallet_type=pallet_type,
+            sales_order_no=sales_order_no,
+            target_mpm=target_mpm,
+            method=r.method,
+            box_count=r.box_count,
+            items_placed=r.items_placed,
+            items_unplaced=r.items_unplaced,
+            pallet_count=r.pallet_count,
+            success_pallets=r.success_pallets,
+            failed_pallets=r.failed_pallets,
+            avg_fill_rate=r.avg_fill_rate,
+            runtime_seconds=r.runtime_seconds,
+            avg_mpm_total=r.avg_mpm_total,
+        )
+        for r in constrained_results
+    ]
+    if current_result is not None:
+        rows.append(
+            _constrained_row(
+                pallet_type=pallet_type,
+                sales_order_no=sales_order_no,
+                target_mpm=target_mpm,
+                method="current",
+                box_count=current_result.box_count,
+                items_placed=current_result.box_count,
+                items_unplaced=0,
+                pallet_count=current_result.pallet_count,
+                success_pallets=current_result.success_pallets,
+                failed_pallets=current_result.failed_pallets,
+                avg_fill_rate=current_result.avg_fill_rate,
+                runtime_seconds=current_result.runtime_seconds,
+                avg_mpm_total=current_result.avg_mpm_total,
+            )
+        )
+    return rows
+
+
+def build_constrained_summary_rows(detail_rows: List[Dict]) -> List[Dict]:
+    import pandas as pd
+
+    if not detail_rows:
+        return []
+
+    df = pd.DataFrame(detail_rows)
+    summary_rows: List[Dict] = []
+    for method, group in df.groupby("方法", sort=False):
+        box_count = int(group["箱数"].sum())
+        placed = int(group["已装"].sum())
+        summary_rows.append({
+            "方法": method,
+            "订单组数": int(group["销售订单号"].nunique()),
+            "总箱数": box_count,
+            "总已装": placed,
+            "总未装": int(group["未装"].sum()),
+            "总装完率": round(placed / box_count, 6) if box_count else 0.0,
+            "总托盘数": int(group["托盘数"].sum()),
+            "总达标盘": int(group["达标盘"].sum()),
+            "总未达标盘": int(group["未达标盘"].sum()),
+            "加权平均填充率": round(
+                float((group["平均填充率"] * group["托盘数"]).sum())
+                / max(1, int(group["托盘数"].sum())),
+                6,
+            ),
+            "总耗时秒": round(float(group["耗时秒"].sum()), 2),
+        })
+    return summary_rows
+
+
+def export_constrained_benchmark_excel(
+    detail_rows: List[Dict],
+    output_path: Path,
+    *,
+    summary_rows: Optional[List[Dict]] = None,
+) -> Path:
+    """将约束版 benchmark 明细与汇总写入 Excel。"""
+    import pandas as pd
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_rows = summary_rows or build_constrained_summary_rows(detail_rows)
+
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        pd.DataFrame(detail_rows).to_excel(
+            writer, sheet_name="分组明细", index=False
+        )
+        pd.DataFrame(summary_rows).to_excel(
+            writer, sheet_name="汇总", index=False
+        )
+    return output_path
+
+
 def format_comparison_table(
     deeppack_results: List[BenchmarkResult],
     current_result: Optional[CurrentProjectResult] = None,
