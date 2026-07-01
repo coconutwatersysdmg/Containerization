@@ -1,17 +1,20 @@
 """
-装箱服务入口（持续运行模式）
+装箱服务入口
 
-双线程架构：
-  - 下载线程：每 200 秒向 WCS 接口请求一次库存数据，保存原始 JSON 到 input/
-  - 处理线程：按文件名时间顺序逐个读取 input/ 中的 JSON，执行装箱，结果保存到 output/
-  - 处理完的输入文件自动移动到 input/processed/
-
-只要不手动终止（Ctrl+C），程序会一直运行。
+双模式（由 USE_API_DATA 控制）：
+  - USE_API_DATA = True（接口模式，默认）：
+      下载线程每 200 秒向 WCS 接口请求库存，保存 JSON 到 input/
+      处理线程按文件名顺序读取 input/ 中的 JSON 并装箱
+  - USE_API_DATA = False（Excel 模式）：
+      读取 data/多条件筛选随机挑选 5000 个箱子最终结果(单托盘).xlsx，跑一遍后退出
 
 用法:
     python run_packing.py
+    python run_packing.py --excel    # 临时切到 Excel 模式
+    python run_packing.py --api      # 临时切到接口模式
 """
 
+import argparse
 import shutil
 import sys
 import threading
@@ -24,7 +27,8 @@ sys.path.insert(0, str(project_root))
 import pandas as pd
 
 from src.config import ENABLE_EXPENSIVE_FAILED_REPACK, OUTPUT_DIR, PALLET_INDEX_TARGETS
-from src.data import fetch_and_save_stock_json, load_boxes_from_local_json
+from src.config.constants import SMALL_BOX_SOURCE_FILE
+from src.data import fetch_and_save_stock_json, load_boxes, load_boxes_from_local_json
 from src.geometry import validate_center_of_mass
 from src.main import PackingWorkflow, build_json_output_plan
 from src.main.report_persister import JsonFileReportPersister
@@ -47,7 +51,8 @@ from src.rescue import (
 # ============================================================================
 # 配置
 # ============================================================================
-DOWNLOAD_INTERVAL = 200        # 下载间隔（秒）
+USE_API_DATA = True            # True=接口模式（持续运行）；False=Excel 模式（5000条，跑完退出）
+DOWNLOAD_INTERVAL = 200        # 下载间隔（秒），仅接口模式有效
 INPUT_DIR = project_root / "input"
 PROCESSED_DIR = INPUT_DIR / "processed"
 BAD_DIR = INPUT_DIR / "bad"
@@ -202,20 +207,40 @@ def _process_worker(stop_event: threading.Event, workflow: PackingWorkflow):
     print("[处理线程] 已停止。")
 
 
-# ============================================================================
-# 主入口
-# ============================================================================
-if __name__ == '__main__':
+def _run_excel_mode(workflow: PackingWorkflow, excel_path: Path) -> None:
+    """Excel 模式：加载 5000 条数据，执行一次装箱后退出。"""
     print("=" * 60)
-    print("装箱服务已启动（持续运行模式）")
+    print("装箱服务（Excel 模式）")
+    print(f"  数据文件: {excel_path}")
+    print(f"  输出目录: {OUTPUT_DIR}")
+    print("=" * 60)
+
+    if not excel_path.exists():
+        print(f"错误：Excel 文件不存在: {excel_path}")
+        sys.exit(1)
+
+    boxes = load_boxes(str(excel_path))
+    if not boxes:
+        print("错误：Excel 无有效箱子数据")
+        sys.exit(1)
+
+    print(f"共加载 {len(boxes)} 条箱子，开始装箱...")
+    report = workflow.run_with_boxes(boxes)
+    if report is None:
+        print("装箱失败")
+        sys.exit(1)
+    print("装箱完成。")
+
+
+def _run_api_mode(workflow: PackingWorkflow) -> None:
+    """接口模式：双线程持续下载 + 处理 input/ 中的 JSON。"""
+    print("=" * 60)
+    print("装箱服务（接口模式，持续运行）")
     print(f"  下载间隔: {DOWNLOAD_INTERVAL} 秒")
     print(f"  输入目录: {INPUT_DIR}")
     print(f"  输出目录: {OUTPUT_DIR}")
     print("  按 Ctrl+C 停止")
     print("=" * 60)
-
-    # 构建工作流（只构建一次，所有文件共享）
-    workflow = build_workflow()
 
     stop_event = threading.Event()
 
@@ -236,10 +261,50 @@ if __name__ == '__main__':
     processor.start()
 
     try:
-        # 主线程阻塞，直到用户按 Ctrl+C
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         stop_event.set()
         downloader.join(timeout=10)
         processor.join(timeout=10)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="装箱服务入口")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--api",
+        action="store_true",
+        help="使用接口模式（覆盖 USE_API_DATA）",
+    )
+    mode.add_argument(
+        "--excel",
+        action="store_true",
+        help="使用 Excel 模式（覆盖 USE_API_DATA）",
+    )
+    parser.add_argument(
+        "--excel-file",
+        type=Path,
+        default=SMALL_BOX_SOURCE_FILE,
+        help="Excel 模式下的数据文件路径",
+    )
+    return parser.parse_args()
+
+
+# ============================================================================
+# 主入口
+# ============================================================================
+if __name__ == '__main__':
+    args = _parse_args()
+    use_api = USE_API_DATA
+    if args.api:
+        use_api = True
+    elif args.excel:
+        use_api = False
+
+    workflow = build_workflow()
+
+    if use_api:
+        _run_api_mode(workflow)
+    else:
+        _run_excel_mode(workflow, args.excel_file)
