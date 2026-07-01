@@ -109,7 +109,18 @@ def main() -> None:
             output_path = PROJECT_ROOT / "output" / f"constrained_benchmark_{stamp}.xlsx"
         else:
             output_path = args.output
-        export_constrained_benchmark_excel(all_detail_rows, output_path)
+        try:
+            export_constrained_benchmark_excel(all_detail_rows, output_path)
+        except PermissionError:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            fallback = output_path.with_stem(f"{output_path.stem}_{stamp}")
+            print(
+                f"\n警告: 无法写入 {output_path}（文件可能被 Excel/IDE 打开），"
+                f"改用: {fallback}",
+                flush=True,
+            )
+            export_constrained_benchmark_excel(all_detail_rows, fallback)
+            output_path = fallback
         print(f"\nExcel 已保存: {output_path.resolve()}", flush=True)
 
 
